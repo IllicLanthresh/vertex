@@ -17,7 +17,7 @@ build:
 # Run in development mode
 .PHONY: run
 run:
-	go run -ldflags="$(LDFLAGS)" . --port 8080 --log debug
+	go run -ldflags="$(LDFLAGS)" .
 
 # Cross-platform builds (Linux only - requires MACVLAN kernel support)
 .PHONY: build-all

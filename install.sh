@@ -33,18 +33,38 @@ if ! command -v curl &> /dev/null; then
 fi
 
 green "Detecting latest Vertex release..."
-LATEST=$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+LATEST=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
 if [ -z "$LATEST" ]; then
     red "Failed to determine latest version"
     exit 1
 fi
 
-green "Installing Vertex ${LATEST} (linux/${ARCH})..."
-URL="https://github.com/${REPO}/releases/download/${LATEST}/vertex-linux-${ARCH}"
-curl -sSL "$URL" -o "${INSTALL_DIR}/vertex"
+BINARY="vertex-linux-${ARCH}"
+BASE_URL="https://github.com/${REPO}/releases/download/${LATEST}"
+TMPDIR=$(mktemp -d)
+trap 'rm -rf "$TMPDIR"' EXIT
+
+green "Downloading Vertex ${LATEST} (linux/${ARCH})..."
+curl -fsSL "${BASE_URL}/${BINARY}" -o "${TMPDIR}/${BINARY}"
+curl -fsSL "${BASE_URL}/checksums.txt" -o "${TMPDIR}/checksums.txt"
+
+green "Verifying checksum..."
+EXPECTED=$(grep "${BINARY}" "${TMPDIR}/checksums.txt" | awk '{print $1}')
+ACTUAL=$(sha256sum "${TMPDIR}/${BINARY}" | awk '{print $1}')
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+    red "Checksum verification failed!"
+    red "  Expected: ${EXPECTED}"
+    red "  Got:      ${ACTUAL}"
+    exit 1
+fi
+green "Checksum OK"
+
+mv "${TMPDIR}/${BINARY}" "${INSTALL_DIR}/vertex"
 chmod +x "${INSTALL_DIR}/vertex"
 
-cat > "/etc/systemd/system/${SERVICE_NAME}.service" << 'EOF'
+# Set up systemd service if systemctl is available
+if command -v systemctl &> /dev/null && [ -d /etc/systemd/system ]; then
+    cat > "/etc/systemd/system/${SERVICE_NAME}.service" << 'EOF'
 [Unit]
 Description=Vertex Traffic Generator
 After=network-online.target
@@ -60,14 +80,24 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
+    systemctl daemon-reload
 
-green "Vertex ${LATEST} installed successfully!"
-echo ""
-echo "Run it:"
-echo "  sudo vertex"
-echo ""
-echo "Optional — run as a background service instead:"
-echo "  sudo systemctl start vertex"
-echo "  sudo systemctl enable vertex   # auto-start on boot"
-echo "  sudo journalctl -u vertex -f   # view logs"
+    green "Vertex ${LATEST} installed successfully!"
+    echo ""
+    echo "Run it:"
+    echo "  sudo vertex"
+    echo ""
+    echo "Optional — run as a background service instead:"
+    echo "  sudo systemctl start vertex"
+    echo "  sudo systemctl enable vertex   # auto-start on boot"
+    echo "  sudo journalctl -u vertex -f   # view logs"
+else
+    green "Vertex ${LATEST} installed successfully!"
+    echo ""
+    echo "Run it:"
+    echo "  sudo vertex"
+    echo ""
+    yellow "Note: systemd not detected — skipping service setup."
+    yellow "To run in the background without systemd:"
+    yellow "  sudo vertex --headless &"
+fi

@@ -15,7 +15,6 @@ import (
 	"github.com/IllicLanthresh/vertex/internal/interfaces"
 )
 
-// Crawler generates HTTP traffic from a specific virtual device
 type Crawler struct {
 	config      *config.Config
 	device      *interfaces.VirtualDevice
@@ -24,6 +23,7 @@ type Crawler struct {
 	visitedURLs map[string]bool
 	links       []string
 	rand        *rand.Rand
+	ctx         context.Context
 }
 
 // NewCrawler creates a new crawler for a virtual device
@@ -58,9 +58,9 @@ func NewCrawler(cfg *config.Config, device *interfaces.VirtualDevice, id string)
 
 // Run starts the crawler loop
 func (c *Crawler) Run(ctx context.Context, stopChan <-chan struct{}) {
+	c.ctx = ctx
 	log.Printf("Starting crawler %s on device %s (%s)", c.id, c.device.Name, c.device.IP)
 
-	// Initialize with root URLs
 	c.links = append(c.links, c.config.RootURLs...)
 
 	ticker := time.NewTicker(c.getRandomSleepDuration())
@@ -113,13 +113,11 @@ func (c *Crawler) crawlNext() {
 	c.crawlURL(targetURL, 0)
 }
 
-// crawlURL crawls a single URL and extracts links
 func (c *Crawler) crawlURL(targetURL string, depth int) {
-	if depth > c.config.MaxDepth {
+	if c.ctx.Err() != nil || depth > c.config.MaxDepth {
 		return
 	}
 
-	// Check if URL is blacklisted
 	for _, blacklisted := range c.config.BlacklistedURLs {
 		if strings.Contains(targetURL, blacklisted) {
 			log.Printf("Skipping blacklisted URL: %s", targetURL)
@@ -129,19 +127,17 @@ func (c *Crawler) crawlURL(targetURL string, depth int) {
 
 	log.Printf("Crawler %s: Fetching %s (depth: %d)", c.id, targetURL, depth)
 
-	req, err := http.NewRequest("GET", targetURL, nil)
+	req, err := http.NewRequestWithContext(c.ctx, "GET", targetURL, nil)
 	if err != nil {
 		log.Printf("Crawler %s: Failed to create request for %s: %v", c.id, targetURL, err)
 		return
 	}
 
-	// Set random user agent
 	if len(c.config.UserAgents) > 0 {
 		userAgent := c.config.UserAgents[c.rand.Intn(len(c.config.UserAgents))]
 		req.Header.Set("User-Agent", userAgent)
 	}
 
-	// Set common headers
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
 	req.Header.Set("Connection", "keep-alive")
@@ -149,6 +145,9 @@ func (c *Crawler) crawlURL(targetURL string, depth int) {
 	start := time.Now()
 	resp, err := c.client.Do(req)
 	if err != nil {
+		if c.ctx.Err() != nil {
+			return
+		}
 		log.Printf("Crawler %s: Failed to fetch %s: %v", c.id, targetURL, err)
 		return
 	}
@@ -158,7 +157,6 @@ func (c *Crawler) crawlURL(targetURL string, depth int) {
 	log.Printf("Crawler %s: Fetched %s in %v (status: %d, size: %d bytes)",
 		c.id, targetURL, duration, resp.StatusCode, resp.ContentLength)
 
-	// Only process successful responses
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return
 	}
@@ -171,12 +169,10 @@ func (c *Crawler) crawlURL(targetURL string, depth int) {
 		return
 	}
 
-	// Extract links for further crawling
 	newLinks := c.extractLinks(string(body), targetURL)
 
-	// Add new links to queue (limited to prevent memory explosion)
 	for i, link := range newLinks {
-		if i >= 10 { // Limit to 10 new links per page
+		if i >= 10 {
 			break
 		}
 		if !c.visitedURLs[link] {
@@ -186,17 +182,22 @@ func (c *Crawler) crawlURL(targetURL string, depth int) {
 
 	log.Printf("Crawler %s: Extracted %d new links from %s", c.id, len(newLinks), targetURL)
 
-	// Randomly crawl some of the extracted links immediately (depth-first)
 	if depth < c.config.MaxDepth && len(newLinks) > 0 {
-		// Crawl 1-2 random links immediately
 		numToCrawl := 1 + c.rand.Intn(2)
 		if numToCrawl > len(newLinks) {
 			numToCrawl = len(newLinks)
 		}
 
 		for i := 0; i < numToCrawl; i++ {
+			if c.ctx.Err() != nil {
+				return
+			}
 			link := newLinks[c.rand.Intn(len(newLinks))]
-			time.Sleep(time.Duration(c.rand.Intn(2)+1) * time.Second) // Brief delay
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-time.After(time.Duration(c.rand.Intn(2)+1) * time.Second):
+			}
 			c.crawlURL(link, depth+1)
 		}
 	}

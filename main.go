@@ -54,6 +54,7 @@ func main() {
 
 		<-sigChan
 		log.Println("Shutting down...")
+		cancel()
 		generator.Stop()
 		return
 	}

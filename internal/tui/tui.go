@@ -415,6 +415,10 @@ func (m model) renderFooter() string {
 		helpPair(m.styles, "[r]", "restart"),
 		helpPair(m.styles, "[q]", "quit"),
 		helpPair(m.styles, "[↑↓]", "scroll"),
+		"│",
+		helpPair(m.styles, "[</>]", "vdev"),
+		helpPair(m.styles, "[/]", "depth"),
+		helpPair(m.styles, "[+/-]", "sleep"),
 	}
 	return m.styles.footer.Width(m.width - 2).Render(strings.Join(parts, "   "))
 }

@@ -27,29 +27,22 @@ type styles struct {
 
 func defaultStyles() styles {
 	const (
-		bg0         = "#0B0F14"
-		bg1         = "#111A23"
-		bg2         = "#162332"
-		border      = "#2B3D52"
-		fg0         = "#E4EEF8"
-		fg1         = "#C0D2E2"
-		muted       = "#7E97AD"
-		accent      = "#4CC9F0"
-		good        = "#52D273"
-		bad         = "#FF6B6B"
-		amber       = "#F3A953"
-		headerGradA = "#12263A"
-		headerGradB = "#18374F"
+		border = "#2B3D52"
+		fg0    = "#E4EEF8"
+		fg1    = "#C0D2E2"
+		muted  = "#7E97AD"
+		accent = "#4CC9F0"
+		good   = "#52D273"
+		bad    = "#FF6B6B"
+		amber  = "#F3A953"
 	)
 
 	return styles{
 		appFrame: lipgloss.NewStyle().
-			Background(lipgloss.Color(bg0)).
 			Foreground(lipgloss.Color(fg0)),
 
 		headerBox: lipgloss.NewStyle().
 			Padding(0, 1).
-			Background(lipgloss.Color(headerGradA)).
 			Foreground(lipgloss.Color(fg0)).
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(border)),
@@ -60,25 +53,24 @@ func defaultStyles() styles {
 
 		statusRunning: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color(bg0)).
+			Foreground(lipgloss.Color("#000000")).
 			Background(lipgloss.Color(good)).
 			Padding(0, 1),
 
 		statusStopped: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color(bg0)).
+			Foreground(lipgloss.Color("#000000")).
 			Background(lipgloss.Color(bad)).
 			Padding(0, 1),
 
 		statusTransition: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color(bg0)).
+			Foreground(lipgloss.Color("#000000")).
 			Background(lipgloss.Color(amber)).
 			Padding(0, 1),
 
 		panel: lipgloss.NewStyle().
 			Padding(0, 1).
-			Background(lipgloss.Color(bg1)).
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(border)),
 
@@ -113,7 +105,6 @@ func defaultStyles() styles {
 
 		footer: lipgloss.NewStyle().
 			Padding(0, 1).
-			Background(lipgloss.Color(bg2)).
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(border)),
 

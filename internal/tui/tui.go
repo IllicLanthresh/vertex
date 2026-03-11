@@ -271,8 +271,13 @@ func (m model) View() string {
 
 	header := m.renderHeader()
 	body := m.renderBody()
-	logs := m.renderLogsPanel()
 	footer := m.renderFooter()
+
+	// Measure fixed sections, give logs all remaining space.
+	used := lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(footer)
+	logHeight := max(3, m.height-used)
+
+	logs := m.renderLogsPanel(logHeight)
 
 	view := lipgloss.JoinVertical(lipgloss.Left, header, body, logs, footer)
 	return m.styles.appFrame.Width(m.width).Render(view)
@@ -301,10 +306,17 @@ func (m *model) resizeViewport() {
 		return
 	}
 
+	// Render fixed sections to measure their actual height.
+	header := m.renderHeader()
+	body := m.renderBody()
+	footer := m.renderFooter()
+	used := lipgloss.Height(header) + lipgloss.Height(body) + lipgloss.Height(footer)
+	logHeight := max(3, m.height-used)
+
 	panelWidth := max(20, m.width-2)
-	logHeight := max(6, m.height-20)
+	// Subtract panel border (2) + title line (1) so viewport fits inside.
 	m.vp.Width = panelWidth - 2
-	m.vp.Height = logHeight - 2
+	m.vp.Height = max(1, logHeight-3)
 	m.vp.SetContent(strings.Join(m.logs, "\n"))
 	if m.vp.AtBottom() {
 		m.vp.GotoBottom()
@@ -397,28 +409,27 @@ func (m model) renderConfigPanel(width int) string {
 	b.WriteString("\n")
 	b.WriteString(configRow(m.styles, "Interfaces", fmt.Sprintf("%d configured", len(cfg.NetworkSimulation.Interfaces))))
 	b.WriteString("\n\n")
-	b.WriteString(m.styles.muted.Render("Config keys: </> vdev  [/] depth  +/- sleep"))
+	b.WriteString(m.styles.muted.Render("Keys: < > vdev  [ ] depth  + - sleep"))
 
 	return m.styles.panel.Width(width).Render(b.String())
 }
 
-func (m model) renderLogsPanel() string {
-	height := max(6, m.height-20)
+func (m model) renderLogsPanel(height int) string {
 	content := m.styles.panelTitle.Render("Logs") + "\n" + m.vp.View()
 	return m.styles.panel.Width(m.width - 2).Height(height).Render(content)
 }
 
 func (m model) renderFooter() string {
 	parts := []string{
-		helpPair(m.styles, "[s]", "start"),
-		helpPair(m.styles, "[x]", "stop"),
-		helpPair(m.styles, "[r]", "restart"),
-		helpPair(m.styles, "[q]", "quit"),
-		helpPair(m.styles, "[↑↓]", "scroll"),
+		helpPair(m.styles, "s", "start"),
+		helpPair(m.styles, "x", "stop"),
+		helpPair(m.styles, "r", "restart"),
+		helpPair(m.styles, "q", "quit"),
+		helpPair(m.styles, "↑↓", "scroll"),
 		"│",
-		helpPair(m.styles, "[</>]", "vdev"),
-		helpPair(m.styles, "[/]", "depth"),
-		helpPair(m.styles, "[+/-]", "sleep"),
+		helpPair(m.styles, "< >", "vdev"),
+		helpPair(m.styles, "[ ]", "depth"),
+		helpPair(m.styles, "+ -", "sleep"),
 	}
 	return m.styles.footer.Width(m.width - 2).Render(strings.Join(parts, "   "))
 }

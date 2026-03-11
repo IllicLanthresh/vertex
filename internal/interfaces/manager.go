@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -14,11 +15,12 @@ import (
 
 // VirtualDevice represents a virtual network device
 type VirtualDevice struct {
-	Name      string
-	Interface string
-	IP        string
-	MAC       string
-	LinkIndex int
+	Name       string
+	Interface  string
+	IP         string
+	MAC        string
+	LinkIndex  int
+	RouteTable int // policy routing table ID (0 = none)
 }
 
 // Manager manages network interfaces and virtual devices
@@ -157,11 +159,118 @@ func (m *Manager) createSingleVirtualDevice(interfaceName string, index int, mac
 	// Try to get IP address via DHCP
 	if ip, err := m.getDHCPAddress(deviceName, dhcpRetries, dhcpRetryDelay); err == nil {
 		device.IP = ip
+		if err := m.setupPolicyRouting(device, interfaceName, index); err != nil {
+			log.Printf("Policy routing setup failed for %s: %v (traffic may not route)", deviceName, err)
+		}
 	} else {
 		log.Printf("Failed to get DHCP address for %s: %v", deviceName, err)
 	}
 
 	return device, nil
+}
+
+const policyRouteTableBase = 100
+
+func (m *Manager) setupPolicyRouting(device *VirtualDevice, parentIface string, index int) error {
+	gateway, err := m.getDefaultGateway(parentIface)
+	if err != nil {
+		return fmt.Errorf("no default gateway found for %s: %w", parentIface, err)
+	}
+
+	deviceIP := net.ParseIP(device.IP)
+	if deviceIP == nil {
+		return fmt.Errorf("invalid device IP: %s", device.IP)
+	}
+
+	link, err := netlink.LinkByName(device.Name)
+	if err != nil {
+		return fmt.Errorf("failed to get link %s: %w", device.Name, err)
+	}
+
+	tableID := policyRouteTableBase + index
+
+	route := &netlink.Route{
+		LinkIndex: link.Attrs().Index,
+		Gw:        gateway,
+		Table:     tableID,
+	}
+	if err := netlink.RouteAdd(route); err != nil {
+		return fmt.Errorf("failed to add route in table %d: %w", tableID, err)
+	}
+
+	h, err := netlink.NewHandle()
+	if err != nil {
+		netlink.RouteDel(route)
+		return fmt.Errorf("failed to create netlink handle: %w", err)
+	}
+	defer h.Delete()
+
+	rule := netlink.NewRule()
+	rule.Src = &net.IPNet{IP: deviceIP, Mask: net.CIDRMask(32, 32)}
+	rule.Table = tableID
+	if err := h.RuleAdd(rule); err != nil {
+		netlink.RouteDel(route)
+		return fmt.Errorf("failed to add rule for %s: %w", device.IP, err)
+	}
+
+	device.RouteTable = tableID
+	log.Printf("Policy routing: %s (%s) -> table %d via %s", device.Name, device.IP, tableID, gateway)
+	return nil
+}
+
+func (m *Manager) getDefaultGateway(parentIface string) (net.IP, error) {
+	link, err := netlink.LinkByName(parentIface)
+	if err != nil {
+		return nil, err
+	}
+
+	routes, err := netlink.RouteList(link, syscall.AF_INET)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, r := range routes {
+		if r.Dst == nil && r.Gw != nil {
+			return r.Gw, nil
+		}
+	}
+
+	allRoutes, err := netlink.RouteList(nil, syscall.AF_INET)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range allRoutes {
+		if r.Dst == nil && r.Gw != nil {
+			return r.Gw, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no default gateway found")
+}
+
+func (m *Manager) cleanupPolicyRouting(device *VirtualDevice) {
+	if device.RouteTable == 0 || device.IP == "" {
+		return
+	}
+
+	deviceIP := net.ParseIP(device.IP)
+	if deviceIP == nil {
+		return
+	}
+
+	h, err := netlink.NewHandle()
+	if err != nil {
+		log.Printf("Failed to create netlink handle for cleanup: %v", err)
+		return
+	}
+	defer h.Delete()
+
+	rule := netlink.NewRule()
+	rule.Src = &net.IPNet{IP: deviceIP, Mask: net.CIDRMask(32, 32)}
+	rule.Table = device.RouteTable
+	if err := h.RuleDel(rule); err != nil {
+		log.Printf("Failed to remove routing rule for %s: %v", device.IP, err)
+	}
 }
 
 // generateMACAddress generates a MAC address with the given prefix
@@ -247,8 +356,9 @@ func (m *Manager) GetAllVirtualDevices() map[string][]*VirtualDevice {
 	return result
 }
 
-// cleanupVirtualDevice removes a virtual device
 func (m *Manager) cleanupVirtualDevice(device *VirtualDevice) {
+	m.cleanupPolicyRouting(device)
+
 	link, err := netlink.LinkByName(device.Name)
 	if err != nil {
 		log.Printf("Failed to get link for cleanup %s: %v", device.Name, err)

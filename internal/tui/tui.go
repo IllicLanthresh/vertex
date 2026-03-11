@@ -226,6 +226,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case refreshMsg:
 		m.running = msg.running
 		m.interfaces = msg.interfaces
+		m.resizeViewport()
 		if len(m.interfaces) == 0 && !m.discoverTried {
 			m.discoverTried = true
 			return m, m.discoverInterfaces()
@@ -367,24 +368,28 @@ func (m model) renderInterfacesPanel(width int) string {
 	} else {
 		for i, iface := range m.interfaces {
 			if i > 0 {
-				b.WriteString("\n\n")
+				b.WriteString("\n")
 			}
 
-			status := m.styles.ifaceDown.Render("○ DOWN")
+			status := m.styles.ifaceDown.Render("○ DN")
 			if iface.isUp {
 				status = m.styles.ifaceUp.Render("● UP")
 			}
 
-			b.WriteString(fmt.Sprintf("%s  %s", m.styles.ifaceName.Render(iface.name), status))
-			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("%s %s", m.styles.metricLabel.Render("TX:"), m.styles.metricValue.Render(humanBytes(iface.bytesSent))))
-			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("%s %s", m.styles.metricLabel.Render("RX:"), m.styles.metricValue.Render(humanBytes(iface.bytesRecv))))
-			b.WriteString("\n")
-			b.WriteString(fmt.Sprintf("%s %s", m.styles.metricLabel.Render("VDevs:"), m.styles.metricValue.Render(fmt.Sprintf("%d/%d active", iface.vdevActive, iface.vdevCount))))
+			b.WriteString(fmt.Sprintf("%s %s  %s %s  %s %s  %s %s",
+				m.styles.ifaceName.Render(iface.name),
+				status,
+				m.styles.metricLabel.Render("TX:"),
+				m.styles.metricValue.Render(humanBytes(iface.bytesSent)),
+				m.styles.metricLabel.Render("RX:"),
+				m.styles.metricValue.Render(humanBytes(iface.bytesRecv)),
+				m.styles.metricLabel.Render("VD:"),
+				m.styles.metricValue.Render(fmt.Sprintf("%d/%d", iface.vdevActive, iface.vdevCount)),
+			))
+
 			if len(iface.ipAddresses) > 0 {
 				b.WriteString("\n")
-				b.WriteString(fmt.Sprintf("%s %s", m.styles.metricLabel.Render("IPs:"), m.styles.muted.Render(strings.Join(iface.ipAddresses, ", "))))
+				b.WriteString(m.styles.muted.Render("  " + strings.Join(iface.ipAddresses, ", ")))
 			}
 		}
 	}

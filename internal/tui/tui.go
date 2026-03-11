@@ -453,7 +453,7 @@ func (m model) renderConfigPanel(width int) string {
 
 func (m model) renderLogsPanel(height int) string {
 	content := m.styles.panelTitle.Render("Logs") + "\n" + m.vp.View()
-	return m.styles.panel.Width(m.width - 2).Height(height).Render(content)
+	return m.styles.panel.Width(m.width - 2).Height(max(1, height-2)).Render(content)
 }
 
 func (m model) renderFooter() string {
@@ -595,7 +595,7 @@ func configRow(s styles, keyName, value string) string {
 }
 
 func helpPair(s styles, k, text string) string {
-	return s.helpKey.Render(k) + s.helpText.Render(text)
+	return s.helpKey.Render(k) + " " + s.helpText.Render(text)
 }
 
 func humanBytes(v uint64) string {

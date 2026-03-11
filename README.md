@@ -48,9 +48,14 @@ sudo vertex --headless
 vertex [options]
 
 Options:
-  -headless      Run without TUI, auto-starts traffic with embedded config
-  -config string External config file (optional - uses embedded defaults)
-  -version       Show version information
+  -headless        Run without TUI, auto-starts traffic with embedded config
+  -config string   External config file (optional - uses embedded defaults)
+  -devices int     Virtual devices per interface (default: 3)
+  -depth int       Max crawl depth (default: 25)
+  -min-sleep int   Min seconds between fetches (default: 3)
+  -max-sleep int   Max seconds between fetches (default: 6)
+  -timeout int     HTTP request timeout in seconds (default: 30)
+  -version         Show version information
 ```
 
 ### TUI Controls

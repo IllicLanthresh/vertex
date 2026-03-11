@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -29,20 +28,12 @@ type Crawler struct {
 
 // NewCrawler creates a new crawler for a virtual device
 func NewCrawler(cfg *config.Config, device *interfaces.VirtualDevice, id string) *Crawler {
-	// Create HTTP client bound to the virtual device's IP
+	// Create HTTP client bound to the virtual device via SO_BINDTODEVICE
+	// (Linux) so traffic egresses through the correct physical interface.
+	dialer := newBoundDialer(device.Name, device.IP, time.Duration(cfg.Timeout)*time.Second)
+
 	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			localAddr := &net.TCPAddr{
-				IP: net.ParseIP(device.IP),
-			}
-
-			dialer := &net.Dialer{
-				LocalAddr: localAddr,
-				Timeout:   time.Duration(cfg.Timeout) * time.Second,
-			}
-
-			return dialer.DialContext(ctx, network, addr)
-		},
+		DialContext:        dialer.DialContext,
 		MaxIdleConns:       10,
 		IdleConnTimeout:    30 * time.Second,
 		DisableCompression: true,

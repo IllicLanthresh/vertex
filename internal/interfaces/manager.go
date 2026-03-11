@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/vishvananda/netlink"
 )
@@ -78,8 +79,7 @@ func (m *Manager) GetPhysicalInterfaces() []string {
 	return result
 }
 
-// CreateVirtualDevices creates virtual devices for the specified interface
-func (m *Manager) CreateVirtualDevices(interfaceName string, count int, macPrefix string) ([]*VirtualDevice, error) {
+func (m *Manager) CreateVirtualDevices(interfaceName string, count int, macPrefix string, dhcpRetries int, dhcpRetryDelay int) ([]*VirtualDevice, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -93,7 +93,7 @@ func (m *Manager) CreateVirtualDevices(interfaceName string, count int, macPrefi
 	var devices []*VirtualDevice
 
 	for i := 0; i < count; i++ {
-		device, err := m.createSingleVirtualDevice(interfaceName, i, macPrefix)
+		device, err := m.createSingleVirtualDevice(interfaceName, i, macPrefix, dhcpRetries, dhcpRetryDelay)
 		if err != nil {
 			log.Printf("Failed to create virtual device %d for %s: %v", i, interfaceName, err)
 			continue
@@ -107,7 +107,7 @@ func (m *Manager) CreateVirtualDevices(interfaceName string, count int, macPrefi
 }
 
 // createSingleVirtualDevice creates a single virtual device
-func (m *Manager) createSingleVirtualDevice(interfaceName string, index int, macPrefix string) (*VirtualDevice, error) {
+func (m *Manager) createSingleVirtualDevice(interfaceName string, index int, macPrefix string, dhcpRetries int, dhcpRetryDelay int) (*VirtualDevice, error) {
 	m.macCounter++
 
 	// Generate device name and MAC address
@@ -155,7 +155,7 @@ func (m *Manager) createSingleVirtualDevice(interfaceName string, index int, mac
 	}
 
 	// Try to get IP address via DHCP
-	if ip, err := m.getDHCPAddress(deviceName); err == nil {
+	if ip, err := m.getDHCPAddress(deviceName, dhcpRetries, dhcpRetryDelay); err == nil {
 		device.IP = ip
 	} else {
 		log.Printf("Failed to get DHCP address for %s: %v", deviceName, err)
@@ -180,36 +180,42 @@ func (m *Manager) generateMACAddress(prefix string, counter int) string {
 		counter&0xff)
 }
 
-// getDHCPAddress attempts to get an IP address via DHCP
-func (m *Manager) getDHCPAddress(interfaceName string) (string, error) {
-	// Try dhclient first
-	cmd := exec.Command("dhclient", "-1", interfaceName)
-	if err := cmd.Run(); err != nil {
-		// Try udhcpc as fallback
-		cmd = exec.Command("udhcpc", "-i", interfaceName, "-n", "-q")
+func (m *Manager) getDHCPAddress(interfaceName string, retries int, retryDelay int) (string, error) {
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			log.Printf("DHCP retry %d/%d for %s", attempt, retries, interfaceName)
+			time.Sleep(time.Duration(retryDelay) * time.Second)
+		}
+
+		cmd := exec.Command("dhclient", "-1", interfaceName)
 		if err := cmd.Run(); err != nil {
-			return "", fmt.Errorf("DHCP failed with both dhclient and udhcpc: %w", err)
+			cmd = exec.Command("udhcpc", "-i", interfaceName, "-n", "-q")
+			if err := cmd.Run(); err != nil {
+				if attempt < retries {
+					continue
+				}
+				return "", fmt.Errorf("DHCP failed after %d attempts", retries+1)
+			}
+		}
+
+		link, err := netlink.LinkByName(interfaceName)
+		if err != nil {
+			continue
+		}
+
+		addrs, err := netlink.AddrList(link, 2) // AF_INET
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			if addr.IP != nil && !addr.IP.IsLoopback() {
+				return addr.IP.String(), nil
+			}
 		}
 	}
 
-	// Get the assigned IP address
-	link, err := netlink.LinkByName(interfaceName)
-	if err != nil {
-		return "", fmt.Errorf("failed to get link: %w", err)
-	}
-
-	addrs, err := netlink.AddrList(link, 2) // AF_INET = 2
-	if err != nil {
-		return "", fmt.Errorf("failed to get addresses: %w", err)
-	}
-
-	for _, addr := range addrs {
-		if addr.IP != nil && !addr.IP.IsLoopback() {
-			return addr.IP.String(), nil
-		}
-	}
-
-	return "", fmt.Errorf("no IP address assigned")
+	return "", fmt.Errorf("no IP address assigned after %d attempts", retries+1)
 }
 
 // GetVirtualDevices returns virtual devices for an interface

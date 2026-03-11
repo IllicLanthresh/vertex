@@ -75,6 +75,8 @@ func (g *Generator) Start(ctx context.Context) error {
 			iface,
 			ifaceConfig.VirtualDevices,
 			g.config.NetworkSimulation.MACPrefix,
+			g.config.NetworkSimulation.DHCPRetries,
+			g.config.NetworkSimulation.DHCPRetryDelay,
 		)
 		if err != nil {
 			log.Printf("Failed to create virtual devices for %s: %v", iface, err)

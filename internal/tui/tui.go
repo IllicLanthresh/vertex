@@ -80,6 +80,8 @@ type logMsg struct {
 	line string
 }
 
+type flushLogsMsg struct{}
+
 type ctxDoneMsg struct{}
 
 type quitReadyMsg struct {
@@ -102,6 +104,8 @@ type model struct {
 
 	running    bool
 	interfaces []interfaceView
+
+	pendingLogs []string
 
 	busy      bool
 	busyLabel string
@@ -128,7 +132,7 @@ func newModel(ctx context.Context, cfg *config.Config, gen *traffic.Generator) m
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(m.waitForContextCancel(), m.refreshNow(), m.tick())
+	return tea.Batch(m.waitForContextCancel(), m.refreshNow(), m.tick(), m.logFlushTick())
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -225,8 +229,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case refreshMsg:
 		m.running = msg.running
+		prevCount := len(m.interfaces)
 		m.interfaces = msg.interfaces
-		m.resizeViewport()
+		if len(m.interfaces) != prevCount {
+			m.resizeViewport()
+		}
 		if len(m.interfaces) == 0 && !m.discoverTried {
 			m.discoverTried = true
 			return m, m.discoverInterfaces()
@@ -244,7 +251,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.refreshNow()
 
 	case logMsg:
-		m.appendLog(msg.line)
+		m.pendingLogs = append(m.pendingLogs, msg.line)
+		return m, nil
+
+	case flushLogsMsg:
+		if len(m.pendingLogs) > 0 {
+			wasAtBottom := m.vp.AtBottom()
+			for _, line := range m.pendingLogs {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					m.logs = append(m.logs, line)
+				}
+			}
+			if len(m.logs) > maxLogEntries {
+				m.logs = m.logs[len(m.logs)-maxLogEntries:]
+			}
+			m.vp.SetContent(strings.Join(m.logs, "\n"))
+			if wasAtBottom {
+				m.vp.GotoBottom()
+			}
+			m.pendingLogs = m.pendingLogs[:0]
+		}
+		return m, m.logFlushTick()
 
 	case ctxDoneMsg:
 		if m.quitting {
@@ -307,7 +335,6 @@ func (m *model) resizeViewport() {
 		return
 	}
 
-	// Render fixed sections to measure their actual height.
 	header := m.renderHeader()
 	body := m.renderBody()
 	footer := m.renderFooter()
@@ -315,13 +342,18 @@ func (m *model) resizeViewport() {
 	logHeight := max(3, m.height-used)
 
 	panelWidth := max(20, m.width-2)
-	// Subtract panel border (2) + title line (1) so viewport fits inside.
 	m.vp.Width = panelWidth - 2
 	m.vp.Height = max(1, logHeight-3)
 	m.vp.SetContent(strings.Join(m.logs, "\n"))
 	if m.vp.AtBottom() {
 		m.vp.GotoBottom()
 	}
+}
+
+func (m model) logFlushTick() tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg {
+		return flushLogsMsg{}
+	})
 }
 
 func (m model) renderHeader() string {

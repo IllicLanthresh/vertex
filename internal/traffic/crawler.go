@@ -144,7 +144,6 @@ func (c *Crawler) crawlURL(targetURL string, depth int) {
 	// Set common headers
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
-	req.Header.Set("Accept-Encoding", "gzip, deflate")
 	req.Header.Set("Connection", "keep-alive")
 
 	start := time.Now()

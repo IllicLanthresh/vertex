@@ -1,0 +1,159 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        default: 'master'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.inputs.branch || github.ref }}
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.26'
+
+    - name: Verify dependencies
+      run: go mod verify
+
+    - name: Check formatting
+      run: |
+        UNFORMATTED=$(gofmt -l .)
+        if [ -n "$UNFORMATTED" ]; then
+          echo "::error::The following files are not formatted:"
+          echo "$UNFORMATTED"
+          exit 1
+        fi
+
+    - name: Vet
+      run: go vet ./...
+
+    - name: Test
+      run: go test -v ./...
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is-release: ${{ steps.version.outputs.is-release }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.inputs.branch || github.ref }}
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.26'
+
+    - name: Determine version
+      id: version
+      run: |
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          VERSION="${{ github.event.inputs.branch }}-$(git rev-parse --short HEAD)"
+          echo "is-release=false" >> $GITHUB_OUTPUT
+        elif [ "${{ github.ref }}" = "refs/heads/master" ]; then
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -z "$LAST_TAG" ]; then
+            LAST_TAG="v0.0.0"
+            COMMITS=$(git log --oneline)
+          else
+            COMMITS=$(git log ${LAST_TAG}..HEAD --oneline)
+          fi
+
+          # Determine bump type from conventional commits
+          if echo "$COMMITS" | grep -qE "^[a-f0-9]+ feat!|BREAKING CHANGE"; then
+            NEW_VERSION=$(echo $LAST_TAG | sed 's/v//' | awk -F. '{printf "v%d.%d.%d", $1+1, 0, 0}')
+          elif echo "$COMMITS" | grep -qE "^[a-f0-9]+ feat"; then
+            NEW_VERSION=$(echo $LAST_TAG | sed 's/v//' | awk -F. '{printf "v%d.%d.%d", $1, $2+1, 0}')
+          elif echo "$COMMITS" | grep -qE "^[a-f0-9]+ (fix|perf)"; then
+            NEW_VERSION=$(echo $LAST_TAG | sed 's/v//' | awk -F. '{printf "v%d.%d.%d", $1, $2, $3+1}')
+          else
+            # No release for ci, docs, chore, style, refactor, etc.
+            NEW_VERSION=""
+          fi
+
+          if [ -n "$NEW_VERSION" ]; then
+            echo "is-release=true" >> $GITHUB_OUTPUT
+            git tag "$NEW_VERSION"
+            git push origin "$NEW_VERSION"
+            VERSION="$NEW_VERSION"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+            echo "is-release=false" >> $GITHUB_OUTPUT
+          fi
+        else
+          VERSION="pr-$(git rev-parse --short HEAD)"
+          echo "is-release=false" >> $GITHUB_OUTPUT
+        fi
+
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Build binaries
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        LDFLAGS="-w -s -X main.Version=$VERSION -X main.BuildTime=$BUILD_TIME"
+
+        GOOS=linux GOARCH=amd64 go build -ldflags="$LDFLAGS" -o vertex-linux-amd64 .
+        GOOS=linux GOARCH=arm64 go build -ldflags="$LDFLAGS" -o vertex-linux-arm64 .
+
+        sha256sum vertex-* > checksums.txt
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: vertex-${{ steps.version.outputs.version }}
+        path: |
+          vertex-*
+          checksums.txt
+          install.sh
+
+  release:
+    if: needs.build.outputs.is-release == 'true'
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Download artifacts
+      uses: actions/download-artifact@v8
+      with:
+        name: vertex-${{ needs.build.outputs.version }}
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ needs.build.outputs.version }}
+        name: Vertex ${{ needs.build.outputs.version }}
+        generate_release_notes: true
+        files: |
+          vertex-linux-amd64
+          vertex-linux-arm64
+          checksums.txt
+          install.sh
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

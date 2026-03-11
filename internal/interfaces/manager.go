@@ -30,10 +30,11 @@ type VirtualDevice struct {
 
 // Manager manages network interfaces and virtual devices
 type Manager struct {
-	mu             sync.RWMutex
-	physicalIfaces []string
-	virtualDevices map[string][]*VirtualDevice
-	macCounter     int
+	mu                sync.RWMutex
+	physicalIfaces    []string
+	virtualDevices    map[string][]*VirtualDevice
+	macCounter        int
+	routeTableCounter int
 }
 
 // NewManager creates a new interface manager
@@ -164,7 +165,8 @@ func (m *Manager) createSingleVirtualDevice(interfaceName string, index int, mac
 	if ip, gw, err := m.getDHCPAddress(deviceName, dhcpRetries, dhcpRetryDelay); err == nil {
 		device.IP = ip
 		device.Gateway = gw
-		if err := m.setupPolicyRouting(device, index); err != nil {
+		m.routeTableCounter++
+		if err := m.setupPolicyRouting(device, m.routeTableCounter); err != nil {
 			log.Printf("Policy routing setup failed for %s: %v (traffic may not route)", deviceName, err)
 		}
 	} else {

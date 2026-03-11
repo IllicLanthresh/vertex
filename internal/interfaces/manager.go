@@ -1,10 +1,14 @@
 package interfaces
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -18,6 +22,7 @@ type VirtualDevice struct {
 	Name       string
 	Interface  string
 	IP         string
+	Gateway    string // DHCP-provided gateway for this device's network
 	MAC        string
 	LinkIndex  int
 	RouteTable int // policy routing table ID (0 = none)
@@ -156,10 +161,10 @@ func (m *Manager) createSingleVirtualDevice(interfaceName string, index int, mac
 		LinkIndex: macvlan.Attrs().Index,
 	}
 
-	// Try to get IP address via DHCP
-	if ip, err := m.getDHCPAddress(deviceName, dhcpRetries, dhcpRetryDelay); err == nil {
+	if ip, gw, err := m.getDHCPAddress(deviceName, dhcpRetries, dhcpRetryDelay); err == nil {
 		device.IP = ip
-		if err := m.setupPolicyRouting(device, interfaceName, index); err != nil {
+		device.Gateway = gw
+		if err := m.setupPolicyRouting(device, index); err != nil {
 			log.Printf("Policy routing setup failed for %s: %v (traffic may not route)", deviceName, err)
 		}
 	} else {
@@ -171,10 +176,14 @@ func (m *Manager) createSingleVirtualDevice(interfaceName string, index int, mac
 
 const policyRouteTableBase = 100
 
-func (m *Manager) setupPolicyRouting(device *VirtualDevice, parentIface string, index int) error {
-	gateway, err := m.getDefaultGateway(parentIface)
-	if err != nil {
-		return fmt.Errorf("no default gateway found for %s: %w", parentIface, err)
+func (m *Manager) setupPolicyRouting(device *VirtualDevice, index int) error {
+	if device.Gateway == "" {
+		return fmt.Errorf("no gateway available for %s (DHCP did not provide one)", device.Name)
+	}
+
+	gateway := net.ParseIP(device.Gateway)
+	if gateway == nil {
+		return fmt.Errorf("invalid gateway IP %q for %s", device.Gateway, device.Name)
 	}
 
 	deviceIP := net.ParseIP(device.IP)
@@ -218,36 +227,6 @@ func (m *Manager) setupPolicyRouting(device *VirtualDevice, parentIface string, 
 	return nil
 }
 
-func (m *Manager) getDefaultGateway(parentIface string) (net.IP, error) {
-	link, err := netlink.LinkByName(parentIface)
-	if err != nil {
-		return nil, err
-	}
-
-	routes, err := netlink.RouteList(link, syscall.AF_INET)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, r := range routes {
-		if r.Dst == nil && r.Gw != nil {
-			return r.Gw, nil
-		}
-	}
-
-	allRoutes, err := netlink.RouteList(nil, syscall.AF_INET)
-	if err != nil {
-		return nil, err
-	}
-	for _, r := range allRoutes {
-		if r.Dst == nil && r.Gw != nil {
-			return r.Gw, nil
-		}
-	}
-
-	return nil, fmt.Errorf("no default gateway found")
-}
-
 func (m *Manager) cleanupPolicyRouting(device *VirtualDevice) {
 	if device.RouteTable == 0 || device.IP == "" {
 		return
@@ -289,42 +268,109 @@ func (m *Manager) generateMACAddress(prefix string, counter int) string {
 		counter&0xff)
 }
 
-func (m *Manager) getDHCPAddress(interfaceName string, retries int, retryDelay int) (string, error) {
+var reLeaseRouters = regexp.MustCompile(`(?m)^\s*option\s+routers\s+([\d.]+)`)
+
+func (m *Manager) getDHCPAddress(interfaceName string, retries int, retryDelay int) (ip string, gateway string, err error) {
+	leaseDir := "/var/lib/dhcp"
+	leaseFile := filepath.Join(leaseDir, fmt.Sprintf("dhclient.%s.leases", interfaceName))
+
 	for attempt := 0; attempt <= retries; attempt++ {
 		if attempt > 0 {
 			log.Printf("DHCP retry %d/%d for %s", attempt, retries, interfaceName)
 			time.Sleep(time.Duration(retryDelay) * time.Second)
 		}
 
-		cmd := exec.Command("dhclient", "-1", interfaceName)
-		if err := cmd.Run(); err != nil {
-			cmd = exec.Command("udhcpc", "-i", interfaceName, "-n", "-q")
-			if err := cmd.Run(); err != nil {
+		var usedDhclient bool
+
+		os.MkdirAll(leaseDir, 0755)
+		cmd := exec.Command("dhclient", "-1", "-lf", leaseFile, interfaceName)
+		if err := cmd.Run(); err == nil {
+			usedDhclient = true
+		} else {
+			gw, udhcpErr := m.runUdhcpcWithGateway(interfaceName)
+			if udhcpErr != nil {
 				if attempt < retries {
 					continue
 				}
-				return "", fmt.Errorf("DHCP failed after %d attempts", retries+1)
+				return "", "", fmt.Errorf("DHCP failed after %d attempts", retries+1)
 			}
+			gateway = gw
 		}
 
-		link, err := netlink.LinkByName(interfaceName)
-		if err != nil {
+		link, linkErr := netlink.LinkByName(interfaceName)
+		if linkErr != nil {
 			continue
 		}
 
-		addrs, err := netlink.AddrList(link, 2) // AF_INET
-		if err != nil {
+		addrs, addrErr := netlink.AddrList(link, syscall.AF_INET)
+		if addrErr != nil {
 			continue
 		}
 
 		for _, addr := range addrs {
 			if addr.IP != nil && !addr.IP.IsLoopback() {
-				return addr.IP.String(), nil
+				ip = addr.IP.String()
+				break
 			}
 		}
+
+		if ip == "" {
+			continue
+		}
+
+		if usedDhclient && gateway == "" {
+			gateway = m.parseLeaseFileGateway(leaseFile)
+		}
+
+		return ip, gateway, nil
 	}
 
-	return "", fmt.Errorf("no IP address assigned after %d attempts", retries+1)
+	return "", "", fmt.Errorf("no IP address assigned after %d attempts", retries+1)
+}
+
+func (m *Manager) parseLeaseFileGateway(leaseFile string) string {
+	f, err := os.Open(leaseFile)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	var lastGateway string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if matches := reLeaseRouters.FindStringSubmatch(scanner.Text()); len(matches) == 2 {
+			lastGateway = matches[1]
+		}
+	}
+	return lastGateway
+}
+
+func (m *Manager) runUdhcpcWithGateway(interfaceName string) (string, error) {
+	scriptDir := os.TempDir()
+	gwFile := filepath.Join(scriptDir, fmt.Sprintf("vertex-gw-%s", interfaceName))
+	scriptFile := filepath.Join(scriptDir, fmt.Sprintf("vertex-udhcpc-%s.sh", interfaceName))
+
+	scriptContent := fmt.Sprintf("#!/bin/sh\n"+
+		"case \"$1\" in\n"+
+		"  bound|renew) echo \"$router\" > %s ;;\n"+
+		"esac\n", gwFile)
+
+	if err := os.WriteFile(scriptFile, []byte(scriptContent), 0755); err != nil {
+		return "", fmt.Errorf("failed to write udhcpc script: %w", err)
+	}
+	defer os.Remove(scriptFile)
+	defer os.Remove(gwFile)
+
+	cmd := exec.Command("udhcpc", "-i", interfaceName, "-n", "-q", "-s", scriptFile)
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("udhcpc failed: %w", err)
+	}
+
+	data, err := os.ReadFile(gwFile)
+	if err != nil {
+		return "", nil
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 // GetVirtualDevices returns virtual devices for an interface

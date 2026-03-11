@@ -80,8 +80,8 @@ jobs:
           fi
 
           # Determine bump type from conventional commits
-          # Check full commit messages for BREAKING CHANGE footer and subject line patterns
-          if echo "$COMMITS" | grep -qE "^[a-f0-9]+ [a-z]+(\(.*\))?!:" || echo "$COMMITS_FULL" | grep -q "BREAKING CHANGE"; then
+          # Check subject lines for type(scope)!: and full messages for BREAKING CHANGE: footer
+          if echo "$COMMITS" | grep -qE "^[a-f0-9]+ [a-z]+(\(.*\))?!:" || echo "$COMMITS_FULL" | grep -qE "^BREAKING CHANGE:"; then
             NEW_VERSION=$(echo $LAST_TAG | sed 's/v//' | awk -F. '{printf "v%d.%d.%d", $1+1, 0, 0}')
           elif echo "$COMMITS" | grep -qE "^[a-f0-9]+ feat"; then
             NEW_VERSION=$(echo $LAST_TAG | sed 's/v//' | awk -F. '{printf "v%d.%d.%d", $1, $2+1, 0}')
